@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.6.0] - Unreleased
+### Security
+- `secure_buffer` now coordinates page locks process-wide at page granularity,
+  preventing one buffer from unlocking a page still used by another buffer.
+- Replacement, copy, assignment, and string-consumption paths wipe old storage
+  before release and lock replacement storage before copying secrets.
+
+### Changed
+- **Breaking ABI change:** `secure_buffer` layout and move-operation exception
+  specification changed. Shared-library consumers must be fully rebuilt; do not
+  use a 0.6.0 DLL/SO as a drop-in replacement for a 0.5.x build.
+- CI now runs the secure-buffer regression target with page locking both enabled
+  and disabled.
+
+### Upgrade
+- Rebuild every consumer against the 0.6.0 headers and library together.
+- The bundled vcpkg port remains at the latest tagged release until `v0.6.0`
+  is published.
+
 ## [0.5.0] - 2025-09-07
 ### Added
 - Lifecycle management APIs and hardened zeroing for `secure_buffer`.

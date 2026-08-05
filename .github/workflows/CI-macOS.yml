@@ -18,6 +18,7 @@ jobs:
     strategy:
       matrix:
         std: [11, 17]
+        mlock: [ON, OFF]
     steps:
       - uses: actions/checkout@v3
       - name: Install dependencies
@@ -26,14 +27,17 @@ jobs:
           brew uninstall --ignore-dependencies cmake || true
           brew install cmake
       - name: Configure
-        run: cmake -S . -B build -DHMACCPP_BUILD_TESTS=ON -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+        run: cmake -S . -B build -DHMACCPP_BUILD_TESTS=ON -DHMACCPP_ENABLE_MLOCK=${{ matrix.mlock }} -DCMAKE_CXX_STANDARD=${{ matrix.std }}
       - name: Build
         run: cmake --build build
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure -R "test_all|test_totp"
+        run: ctest --test-dir build --output-on-failure
 
   vcpkg:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        mlock: [ON, OFF]
     steps:
       - uses: actions/checkout@v3
       - name: Install vcpkg
@@ -42,8 +46,8 @@ jobs:
           ./vcpkg/bootstrap-vcpkg.sh
           ./vcpkg/vcpkg install gtest
       - name: Configure
-        run: cmake -S . -B build -DHMACCPP_BUILD_TESTS=ON -DCMAKE_TOOLCHAIN_FILE=./vcpkg/scripts/buildsystems/vcpkg.cmake
+        run: cmake -S . -B build -DHMACCPP_BUILD_TESTS=ON -DHMACCPP_ENABLE_MLOCK=${{ matrix.mlock }} -DCMAKE_TOOLCHAIN_FILE=./vcpkg/scripts/buildsystems/vcpkg.cmake
       - name: Build
         run: cmake --build build
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure -R "test_all|test_totp"
+        run: ctest --test-dir build --output-on-failure

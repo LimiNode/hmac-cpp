@@ -8,6 +8,7 @@
 #include <memory>
 #include <stdexcept>
 
+#include "hmac_cpp/page_lock_registry.hpp"
 #include "hmac_cpp/secure_buffer.hpp"
 
 namespace {
@@ -102,6 +103,7 @@ struct PageLockEvent {
     void* ptr{};
     std::size_t bytes{};
     bool was_zeroed_at_lock{};
+    bool was_zeroed_at_unlock{};
 };
 
 struct RecordingPageLocker {
@@ -112,13 +114,22 @@ struct RecordingPageLocker {
             bytes,
             std::all_of(static_cast<const std::uint8_t*>(ptr),
                         static_cast<const std::uint8_t*>(ptr) + bytes,
-                        [](std::uint8_t value) { return value == 0; })
+                        [](std::uint8_t value) { return value == 0; }),
+            false
         };
         return lock_succeeds;
     }
 
     static bool unlock(void* ptr, std::size_t bytes) noexcept {
-        events[event_count++] = {PageLockEventType::Unlock, ptr, bytes, false};
+        events[event_count++] = {
+            PageLockEventType::Unlock,
+            ptr,
+            bytes,
+            false,
+            std::all_of(static_cast<const std::uint8_t*>(ptr),
+                        static_cast<const std::uint8_t*>(ptr) + bytes,
+                        [](std::uint8_t value) { return value == 0; })
+        };
         return true;
     }
 
@@ -133,6 +144,69 @@ std::array<PageLockEvent, 16> RecordingPageLocker::events{};
 std::size_t RecordingPageLocker::event_count{};
 bool RecordingPageLocker::lock_succeeds{true};
 
+struct ThrowingAllocator {
+    using value_type = std::uint8_t;
+
+    template<class U>
+    struct rebind {
+        using other = ThrowingAllocator;
+    };
+
+    ThrowingAllocator() noexcept = default;
+
+    template<class U>
+    ThrowingAllocator(const U&) noexcept {}
+
+    std::uint8_t* allocate(std::size_t count) {
+        if (fail_allocations) {
+            throw std::bad_alloc();
+        }
+        return std::allocator<std::uint8_t>{}.allocate(count);
+    }
+
+    void deallocate(std::uint8_t* ptr, std::size_t count) noexcept {
+        std::allocator<std::uint8_t>{}.deallocate(ptr, count);
+    }
+
+    static bool fail_allocations;
+};
+
+bool operator==(const ThrowingAllocator&, const ThrowingAllocator&) noexcept { return true; }
+bool operator!=(const ThrowingAllocator&, const ThrowingAllocator&) noexcept { return false; }
+bool ThrowingAllocator::fail_allocations{};
+
+enum class RegistryEventType { Lock, Unlock };
+
+struct RegistryEvent {
+    RegistryEventType type{};
+    void* page{};
+};
+
+struct RegistryPageLocker {
+    bool lock_page(void* page, std::size_t) const noexcept {
+        events[event_count++] = {RegistryEventType::Lock, page};
+        return reinterpret_cast<std::uintptr_t>(page) != failing_page;
+    }
+
+    bool unlock_page(void* page, std::size_t) const noexcept {
+        events[event_count++] = {RegistryEventType::Unlock, page};
+        return true;
+    }
+
+    static void reset() noexcept {
+        event_count = 0;
+        failing_page = 0;
+    }
+
+    static std::array<RegistryEvent, 16> events;
+    static std::size_t event_count;
+    static std::uintptr_t failing_page;
+};
+
+std::array<RegistryEvent, 16> RegistryPageLocker::events{};
+std::size_t RegistryPageLocker::event_count{};
+std::uintptr_t RegistryPageLocker::failing_page{};
+
 using UnlockedBuffer = hmac_cpp::secure_buffer<std::uint8_t, false, RecordingAllocator>;
 using LockedBuffer = hmac_cpp::secure_buffer<std::uint8_t,
                                               true,
@@ -146,6 +220,7 @@ using StatefulBuffer = hmac_cpp::secure_buffer<std::uint8_t,
                                                 true,
                                                 StatefulAllocator<std::uint8_t>,
                                                 RecordingPageLocker>;
+using ThrowingBuffer = hmac_cpp::secure_buffer<std::uint8_t, false, ThrowingAllocator>;
 
 TEST(SecureBufferTest, ResizeGrowthWipesOldAllocationBeforeDeallocate) {
     UnlockedBuffer buffer(8);
@@ -197,6 +272,7 @@ TEST(SecureBufferTest, ShrinkThenGrowLocksNewRangeBeforeUnlockingOriginalRange) 
     EXPECT_EQ(RecordingPageLocker::events[1].type, PageLockEventType::Unlock);
     EXPECT_EQ(RecordingPageLocker::events[1].ptr, original_ptr);
     EXPECT_EQ(RecordingPageLocker::events[1].bytes, 8192u);
+    EXPECT_TRUE(RecordingPageLocker::events[1].was_zeroed_at_unlock);
 
     void* const replacement_ptr = buffer.data();
     buffer.clear();
@@ -204,6 +280,7 @@ TEST(SecureBufferTest, ShrinkThenGrowLocksNewRangeBeforeUnlockingOriginalRange) 
     EXPECT_EQ(RecordingPageLocker::events[2].type, PageLockEventType::Unlock);
     EXPECT_EQ(RecordingPageLocker::events[2].ptr, replacement_ptr);
     EXPECT_EQ(RecordingPageLocker::events[2].bytes, 16384u);
+    EXPECT_TRUE(RecordingPageLocker::events[2].was_zeroed_at_unlock);
 }
 
 TEST(SecureBufferTest, MultipleShrinksKeepTheOriginalLockRange) {
@@ -220,6 +297,7 @@ TEST(SecureBufferTest, MultipleShrinksKeepTheOriginalLockRange) {
     EXPECT_EQ(RecordingPageLocker::events[0].type, PageLockEventType::Unlock);
     EXPECT_EQ(RecordingPageLocker::events[0].ptr, original_ptr);
     EXPECT_EQ(RecordingPageLocker::events[0].bytes, 8192u);
+    EXPECT_TRUE(RecordingPageLocker::events[0].was_zeroed_at_unlock);
 }
 
 TEST(SecureBufferTest, CopyConstructionLocksAZeroedReplacementBeforeCopying) {
@@ -272,6 +350,7 @@ TEST(SecureBufferTest, CopyAssignmentLocksReplacementBeforeReleasingDestination)
     EXPECT_EQ(RecordingPageLocker::events[1].type, PageLockEventType::Unlock);
     EXPECT_EQ(RecordingPageLocker::events[1].ptr, destination_ptr);
     EXPECT_EQ(RecordingPageLocker::events[1].bytes, 4u);
+    EXPECT_TRUE(RecordingPageLocker::events[1].was_zeroed_at_unlock);
     EXPECT_TRUE(std::equal(source.begin(), source.end(), destination.begin()));
 }
 
@@ -292,6 +371,7 @@ TEST(SecureBufferTest, AssignLocksReplacementBeforeReleasingDestination) {
     EXPECT_EQ(RecordingPageLocker::events[1].type, PageLockEventType::Unlock);
     EXPECT_EQ(RecordingPageLocker::events[1].ptr, destination_ptr);
     EXPECT_EQ(RecordingPageLocker::events[1].bytes, 4u);
+    EXPECT_TRUE(RecordingPageLocker::events[1].was_zeroed_at_unlock);
     EXPECT_TRUE(std::equal(source.begin(), source.end(), destination.begin()));
 }
 
@@ -361,6 +441,8 @@ TEST(SecureBufferTest, MoveAssignmentCopiesSafelyForUnequalAllocators) {
     EXPECT_EQ(RecordingPageLocker::events[2].type, PageLockEventType::Unlock);
     EXPECT_EQ(RecordingPageLocker::events[2].ptr, source_ptr);
     EXPECT_EQ(RecordingPageLocker::events[2].bytes, 8u);
+    EXPECT_TRUE(RecordingPageLocker::events[1].was_zeroed_at_unlock);
+    EXPECT_TRUE(RecordingPageLocker::events[2].was_zeroed_at_unlock);
     EXPECT_FALSE(source.is_locked());
     EXPECT_TRUE(std::all_of(destination.begin(), destination.end(),
                             [](std::uint8_t value) { return value == 0xA5; }));
@@ -403,6 +485,64 @@ TEST(SecureBufferTest, RejectsElementCountsWhoseByteSizeOverflows) {
     hmac_cpp::secure_buffer<std::uint32_t> buffer;
 
     EXPECT_THROW(buffer.resize(std::numeric_limits<std::size_t>::max()), std::length_error);
+}
+
+TEST(SecureBufferTest, StringAssignWipesTheSourceWhenReplacementAllocationFails) {
+    ThrowingAllocator::fail_allocations = false;
+    ThrowingBuffer destination(4);
+    destination[0] = 0x5A;
+    const void* const destination_ptr = destination.data();
+    std::string source(128, 's');
+    const char* const source_data = source.data();
+    const std::size_t source_size = source.size();
+    ThrowingAllocator::fail_allocations = true;
+
+    EXPECT_THROW(destination.assign(std::move(source)), std::bad_alloc);
+
+    ThrowingAllocator::fail_allocations = false;
+    EXPECT_TRUE(source.empty());
+    EXPECT_TRUE(std::all_of(source_data, source_data + source_size,
+                            [](char value) { return value == 0; }));
+    EXPECT_EQ(destination.data(), destination_ptr);
+    EXPECT_EQ(destination.size(), 4u);
+    EXPECT_EQ(destination[0], 0x5A);
+}
+
+TEST(PageLockRegistryTest, SharedPageRemainsLockedUntilEveryOwnerReleasesIt) {
+    RegistryPageLocker::reset();
+    hmac_cpp::detail::page_lock_registry<RegistryPageLocker> registry(4096);
+    void* const first = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1001));
+    void* const second = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1008));
+
+    ASSERT_TRUE(registry.lock(first, 8));
+    ASSERT_TRUE(registry.lock(second, 8));
+    ASSERT_TRUE(registry.unlock(first, 8));
+
+    ASSERT_EQ(RegistryPageLocker::event_count, 1u);
+    EXPECT_EQ(RegistryPageLocker::events[0].type, RegistryEventType::Lock);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[0].page), 0x1000u);
+
+    ASSERT_TRUE(registry.unlock(second, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 2u);
+    EXPECT_EQ(RegistryPageLocker::events[1].type, RegistryEventType::Unlock);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[1].page), 0x1000u);
+}
+
+TEST(PageLockRegistryTest, RollsBackPagesLockedBeforeAPartialFailure) {
+    RegistryPageLocker::reset();
+    RegistryPageLocker::failing_page = 0x2000;
+    hmac_cpp::detail::page_lock_registry<RegistryPageLocker> registry(4096);
+    void* const range = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1ff8));
+
+    EXPECT_FALSE(registry.lock(range, 16));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+    EXPECT_EQ(RegistryPageLocker::events[0].type, RegistryEventType::Lock);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[0].page), 0x1000u);
+    EXPECT_EQ(RegistryPageLocker::events[1].type, RegistryEventType::Lock);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[1].page), 0x2000u);
+    EXPECT_EQ(RegistryPageLocker::events[2].type, RegistryEventType::Unlock);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[2].page), 0x1000u);
+    EXPECT_FALSE(registry.unlock(range, 16));
 }
 
 } // namespace

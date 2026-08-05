@@ -86,11 +86,8 @@ struct secure_buffer {
     /// \param s Source string.
     template<class U = T, typename std::enable_if<std::is_same<U, uint8_t>::value, int>::type = 0>
     explicit secure_buffer(std::string&& s) {
+        string_wipe_guard source_wiper(s);
         assign(reinterpret_cast<const uint8_t*>(s.data()), s.size());
-        if (!s.empty()) {
-            secure_zero(&s[0], s.size());
-            s.clear();
-        }
     }
 
     secure_buffer(const secure_buffer& other) { replace_with_copy(other.data(), other.size()); }
@@ -165,11 +162,8 @@ struct secure_buffer {
     /// \brief Assign from std::string rvalue and zeroize the source.
     template<class U = T, typename std::enable_if<std::is_same<U, uint8_t>::value, int>::type = 0>
     void assign(std::string&& s) {
+        string_wipe_guard source_wiper(s);
         assign(reinterpret_cast<const uint8_t*>(s.data()), s.size());
-        if (!s.empty()) {
-            secure_zero(&s[0], s.size());
-            s.clear();
-        }
     }
 
     T* data() { return buf.data(); }
@@ -185,6 +179,13 @@ struct secure_buffer {
     typename vector_type::const_iterator end() const { return buf.end(); }
 
 private:
+    struct string_wipe_guard {
+        explicit string_wipe_guard(std::string& value) noexcept : value_(value) {}
+        ~string_wipe_guard() noexcept { wipe_string(value_); }
+
+        std::string& value_;
+    };
+
     struct replacement_guard {
         replacement_guard(void* ptr, size_t bytes) noexcept : ptr_(ptr), bytes_(bytes) {}
 
@@ -231,6 +232,13 @@ private:
 
     static size_t byte_count_noexcept(size_t count) noexcept {
         return count * sizeof(T);
+    }
+
+    static void wipe_string(std::string& value) noexcept {
+        if (!value.empty()) {
+            secure_zero(&value[0], value.size());
+            value.clear();
+        }
     }
 
     static vector_type validate_and_move(vector_type& source) {

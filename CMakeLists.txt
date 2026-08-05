@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(hmac_cpp VERSION 0.5.0 LANGUAGES CXX)
+project(hmac_cpp VERSION 0.6.0 LANGUAGES CXX)
 
 option(HMACCPP_BUILD_EXAMPLES "Build the example program" OFF)
 option(HMACCPP_BUILD_TESTS "Build the test suite" OFF)
@@ -33,6 +33,7 @@ set(HMAC_HEADERS
     include/hmac_cpp/sha512.hpp
     include/hmac_cpp/secure_buffer.hpp
     include/hmac_cpp/memlock.hpp
+    include/hmac_cpp/page_lock_registry.hpp
     include/hmac_cpp/secret_string.hpp
     include/hmac_cpp/encoding.hpp
     include/hmac_cpp/version.hpp
