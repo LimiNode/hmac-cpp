@@ -2,6 +2,7 @@
 #define HMAC_CPP_SECURE_BUFFER_HPP
 
 #include <atomic>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -143,23 +144,32 @@ struct secure_buffer {
         buf.shrink_to_fit();
     }
 
-    /// \brief Resize the buffer, zeroizing truncated data.
+    /// \brief Resize the buffer, zeroizing data before a reallocation releases it.
     void resize(size_t n) {
-        T* old_ptr = buf.data();
-        size_t old_sz = buf.size();
-        if (n < old_sz) {
-            secure_zero(old_ptr + n, (old_sz - n) * sizeof(T));
+        const size_t old_sz = buf.size();
+        if (n <= old_sz) {
+            if (n < old_sz) {
+                secure_zero(buf.data() + n, (old_sz - n) * sizeof(T));
+            }
+            buf.resize(n);
+            return;
         }
-        buf.resize(n);
-        if (LockOnAlloc && old_ptr != buf.data()) {
-            if (locked_) {
-                unlock_pages(old_ptr, old_sz * sizeof(T));
-            }
-            if (!buf.empty()) {
-                locked_ = lock_pages(buf.data(), buf.size() * sizeof(T));
-            } else {
-                locked_ = false;
-            }
+
+        // std::vector::resize may release the old allocation before we can
+        // wipe it. Allocate the replacement first so the old secret remains
+        // reachable until it has been zeroized and unlocked.
+        std::vector<T> replacement(n);
+        std::copy(buf.begin(), buf.end(), replacement.begin());
+
+        secure_zero(buf.data(), old_sz * sizeof(T));
+        if (locked_) {
+            unlock_pages(buf.data(), old_sz * sizeof(T));
+            locked_ = false;
+        }
+
+        buf.swap(replacement);
+        if (LockOnAlloc && !buf.empty()) {
+            locked_ = lock_pages(buf.data(), buf.size() * sizeof(T));
         }
     }
 
