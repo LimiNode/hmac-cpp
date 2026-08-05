@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -53,6 +55,8 @@ static inline void secure_zero(void* ptr, size_t len) {
 }
 
 /// \brief Vector-like buffer that zeroizes its contents on destruction.
+/// Page locking is best-effort: a failed lock leaves the buffer usable, and
+/// is_locked() reports false. A successful lock always records its exact range.
 /// \tparam T Trivial value type stored in the buffer (defaults to uint8_t).
 /// \tparam LockOnAlloc Lock pages in memory on allocation.
 /// \tparam Allocator Allocator used for the backing storage.
@@ -66,60 +70,57 @@ struct secure_buffer {
 
     using vector_type = std::vector<T, Allocator>;
 
-    secure_buffer() {
-        lock_current_range();
-    }
+    secure_buffer() = default;
 
     /// \brief Construct with n default-initialized elements.
     /// \param n Element count.
-    explicit secure_buffer(size_t n) : buf(n) {
-        lock_current_range();
-    }
+    explicit secure_buffer(size_t n) { replace_with_zeroed(n); }
 
     /// \brief Construct from vector, moving its contents.
     /// \param v Source vector.
-    explicit secure_buffer(vector_type&& v) : buf(std::move(v)) {
+    explicit secure_buffer(vector_type&& v) : buf(validate_and_move(v)) {
         lock_current_range();
     }
 
     /// \brief Construct from std::string rvalue and zeroize the source.
     /// \param s Source string.
     template<class U = T, typename std::enable_if<std::is_same<U, uint8_t>::value, int>::type = 0>
-    explicit secure_buffer(std::string&& s) : buf(s.begin(), s.end()) {
-        lock_current_range();
+    explicit secure_buffer(std::string&& s) {
+        assign(reinterpret_cast<const uint8_t*>(s.data()), s.size());
         if (!s.empty()) {
             secure_zero(&s[0], s.size());
             s.clear();
         }
     }
 
-    secure_buffer(const secure_buffer& other) : buf(other.buf) {
-        lock_current_range();
-    }
+    secure_buffer(const secure_buffer& other) { replace_with_copy(other.data(), other.size()); }
 
     secure_buffer& operator=(const secure_buffer& other) {
         if (this != &other) {
-            clear();
-            buf = other.buf;
-            lock_current_range();
+            replace_with_copy(other.data(), other.size());
         }
         return *this;
     }
 
-    secure_buffer(secure_buffer&& other) noexcept
+    secure_buffer(secure_buffer&& other)
         : buf(std::move(other.buf)),
           locked_ptr_(other.locked_ptr_),
           locked_bytes_(other.locked_bytes_) {
         other.clear_locked_range();
     }
 
-    secure_buffer& operator=(secure_buffer&& other) noexcept {
+    secure_buffer& operator=(secure_buffer&& other) {
         if (this != &other) {
-            clear();
-            buf = std::move(other.buf);
-            locked_ptr_ = other.locked_ptr_;
-            locked_bytes_ = other.locked_bytes_;
-            other.clear_locked_range();
+            if (buf.get_allocator() == other.buf.get_allocator()) {
+                clear();
+                buf = std::move(other.buf);
+                locked_ptr_ = other.locked_ptr_;
+                locked_bytes_ = other.locked_bytes_;
+                other.clear_locked_range();
+            } else {
+                replace_with_copy(other.data(), other.size());
+                other.clear();
+            }
         }
         return *this;
     }
@@ -132,7 +133,7 @@ struct secure_buffer {
 
     /// \brief Clear and deallocate the buffer.
     void clear() noexcept {
-        secure_zero(buf.data(), buf.size() * sizeof(T));
+        secure_zero(buf.data(), byte_count_noexcept(buf.size()));
         unlock_locked_range();
         vector_type empty(buf.get_allocator());
         buf.swap(empty);
@@ -140,10 +141,11 @@ struct secure_buffer {
 
     /// \brief Resize the buffer, zeroizing data before a reallocation releases it.
     void resize(size_t n) {
+        checked_byte_count(n);
         const size_t old_sz = buf.size();
         if (n <= old_sz) {
             if (n < old_sz) {
-                secure_zero(buf.data() + n, (old_sz - n) * sizeof(T));
+                secure_zero(buf.data() + n, byte_count_noexcept(old_sz - n));
             }
             buf.resize(n);
             return;
@@ -152,24 +154,12 @@ struct secure_buffer {
         // std::vector::resize may release the old allocation before we can
         // wipe it. Allocate and lock the replacement first so the old secret
         // remains reachable until it has been zeroized and unlocked.
-        vector_type replacement(n, T{}, buf.get_allocator());
-        replacement_guard guard(replacement.data(), replacement.size() * sizeof(T));
-        guard.lock();
-        std::copy(buf.begin(), buf.end(), replacement.begin());
-
-        secure_zero(buf.data(), old_sz * sizeof(T));
-        unlock_locked_range();
-
-        buf.swap(replacement);
-        set_locked_range(buf.data(), buf.size() * sizeof(T), guard.release());
+        replace_with_copy(buf.data(), old_sz, n);
     }
 
     /// \brief Assign from raw pointer.
     void assign(const T* p, size_t n) {
-        secure_zero(buf.data(), buf.size() * sizeof(T));
-        unlock_locked_range();
-        buf.assign(p, p + n);
-        lock_current_range();
+        replace_with_copy(p, n);
     }
 
     /// \brief Assign from std::string rvalue and zeroize the source.
@@ -198,7 +188,7 @@ private:
     struct replacement_guard {
         replacement_guard(void* ptr, size_t bytes) noexcept : ptr_(ptr), bytes_(bytes) {}
 
-        ~replacement_guard() {
+        ~replacement_guard() noexcept {
             if (!active_) {
                 return;
             }
@@ -225,11 +215,67 @@ private:
         bool active_{true};
     };
 
-    void lock_current_range() noexcept {
+    void lock_current_range() {
         if (LockOnAlloc && !buf.empty()) {
-            set_locked_range(buf.data(), buf.size() * sizeof(T),
-                             PageLocker::lock(buf.data(), buf.size() * sizeof(T)));
+            const size_t bytes = checked_byte_count(buf.size());
+            set_locked_range(buf.data(), bytes, PageLocker::lock(buf.data(), bytes));
         }
+    }
+
+    static size_t checked_byte_count(size_t count) {
+        if (count > std::numeric_limits<size_t>::max() / sizeof(T)) {
+            throw std::length_error("secure_buffer size exceeds addressable byte range");
+        }
+        return count * sizeof(T);
+    }
+
+    static size_t byte_count_noexcept(size_t count) noexcept {
+        return count * sizeof(T);
+    }
+
+    static vector_type validate_and_move(vector_type& source) {
+        checked_byte_count(source.size());
+        return std::move(source);
+    }
+
+    vector_type make_replacement(size_t n) {
+        checked_byte_count(n);
+        return vector_type(n, T{}, buf.get_allocator());
+    }
+
+    void replace_with_zeroed(size_t n) {
+        vector_type replacement = make_replacement(n);
+        replacement_guard guard(replacement.data(), checked_byte_count(replacement.size()));
+        guard.lock();
+        replace_with_replacement(replacement, guard);
+    }
+
+    void replace_with_copy(const T* source, size_t n) {
+        replace_with_copy(source, n, n);
+    }
+
+    void replace_with_copy(const T* source, size_t source_size, size_t destination_size) {
+        if (source == nullptr && source_size != 0) {
+            throw std::invalid_argument("secure_buffer source cannot be null");
+        }
+        if (source_size > destination_size) {
+            throw std::length_error("secure_buffer destination is smaller than source");
+        }
+
+        vector_type replacement = make_replacement(destination_size);
+        replacement_guard guard(replacement.data(), checked_byte_count(replacement.size()));
+        guard.lock();
+        if (source_size != 0) {
+            std::copy_n(source, source_size, replacement.begin());
+        }
+        replace_with_replacement(replacement, guard);
+    }
+
+    void replace_with_replacement(vector_type& replacement, replacement_guard& guard) {
+        secure_zero(buf.data(), byte_count_noexcept(buf.size()));
+        unlock_locked_range();
+        buf.swap(replacement);
+        set_locked_range(buf.data(), byte_count_noexcept(buf.size()), guard.release());
     }
 
     void unlock_locked_range() noexcept {
