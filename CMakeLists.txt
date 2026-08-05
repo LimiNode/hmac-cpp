@@ -129,16 +129,26 @@ if(HMACCPP_BUILD_TESTS)
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
     FetchContent_MakeAvailable(googletest)
-    find_package(OpenSSL REQUIRED)
-    add_executable(test_all test_all.cpp)
-    target_link_libraries(test_all PRIVATE hmac_cpp gtest_main OpenSSL::Crypto)
-    target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    add_test(NAME test_all COMMAND test_all)
+
+    add_executable(test_secure_buffer test_secure_buffer.cpp)
+    target_link_libraries(test_secure_buffer PRIVATE hmac_cpp gtest_main)
+    target_include_directories(test_secure_buffer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME test_secure_buffer COMMAND test_secure_buffer)
 
     add_executable(test_totp test_totp.cpp)
     target_link_libraries(test_totp PRIVATE hmac_cpp gtest_main)
     target_include_directories(test_totp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     add_test(NAME test_totp COMMAND test_totp)
+
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND)
+        add_executable(test_all test_all.cpp)
+        target_link_libraries(test_all PRIVATE hmac_cpp gtest_main OpenSSL::Crypto)
+        target_include_directories(test_all PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        add_test(NAME test_all COMMAND test_all)
+    else()
+        message(STATUS "OpenSSL not found; skipping test_all")
+    endif()
 endif()
 
 export(EXPORT hmac_cppTargets

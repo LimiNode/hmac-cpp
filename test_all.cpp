@@ -12,7 +12,6 @@
 #include "hmac_cpp/hmac.hpp"
 #include "hmac_cpp/hmac_utils.hpp"
 #include "hmac_cpp/encoding.hpp"
-#include "hmac_cpp/secure_buffer.hpp"
 #include "hmac_cpp/secret_string.hpp"
 
 static std::time_t mock_time_value = 0;
@@ -31,20 +30,6 @@ static std::vector<uint8_t> from_hex(const std::string& hex) {
         out.push_back(static_cast<uint8_t>(std::stoi(byte, nullptr, 16)));
     }
     return out;
-}
-
-TEST(SecureBufferTest, ResizeGrowthPreservesContents) {
-    hmac_cpp::secure_buffer<uint8_t, true> buffer(8);
-    for (size_t i = 0; i < buffer.size(); ++i) {
-        buffer[i] = static_cast<uint8_t>(i + 1);
-    }
-
-    buffer.resize(4096);
-
-    ASSERT_EQ(buffer.size(), 4096u);
-    for (size_t i = 0; i < 8; ++i) {
-        EXPECT_EQ(buffer[i], static_cast<uint8_t>(i + 1));
-    }
 }
 
 TEST(HashTest, SHA1) {
