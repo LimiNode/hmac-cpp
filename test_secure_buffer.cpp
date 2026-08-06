@@ -225,6 +225,24 @@ struct PageStateAllocationControl {
 
 int PageStateAllocationControl::successful_allocations_before_failure{-1};
 
+class ScopedPageStateAllocationLimit {
+public:
+    ScopedPageStateAllocationLimit() noexcept
+        : saved_limit_(PageStateAllocationControl::successful_allocations_before_failure) {}
+
+    ~ScopedPageStateAllocationLimit() {
+        PageStateAllocationControl::successful_allocations_before_failure = saved_limit_;
+    }
+
+    void set(int successful_allocations_before_failure) noexcept {
+        PageStateAllocationControl::successful_allocations_before_failure =
+            successful_allocations_before_failure;
+    }
+
+private:
+    int saved_limit_{};
+};
+
 template<class T>
 struct ThrowingPageStateAllocator {
     using value_type = T;
@@ -605,7 +623,8 @@ TEST(PageLockRegistryTest, PageStateInsertionFailureReturnsFalseAndClearsPrepare
     using Registry = hmac_cpp::detail::page_lock_registry<RegistryPageLocker, std::mutex, Allocator>;
 
     RegistryPageLocker::reset();
-    PageStateAllocationControl::successful_allocations_before_failure = 1;
+    ScopedPageStateAllocationLimit allocation_limit;
+    allocation_limit.set(1);
     Registry registry(4096);
     void* const range = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1000));
 
@@ -614,11 +633,11 @@ TEST(PageLockRegistryTest, PageStateInsertionFailureReturnsFalseAndClearsPrepare
 
     // If prepared entries remained, this range would reuse the first one and
     // reach the OS locker despite allocations being disabled.
-    PageStateAllocationControl::successful_allocations_before_failure = 0;
+    allocation_limit.set(0);
     EXPECT_FALSE(registry.lock(range, 8));
     EXPECT_EQ(RegistryPageLocker::event_count, 0u);
 
-    PageStateAllocationControl::successful_allocations_before_failure = -1;
+    allocation_limit.set(-1);
     EXPECT_TRUE(registry.lock(range, 8));
     EXPECT_TRUE(registry.unlock(range, 8));
     EXPECT_EQ(RegistryPageLocker::event_count, 2u);
