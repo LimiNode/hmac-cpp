@@ -230,6 +230,9 @@ public:
     ScopedPageStateAllocationLimit() noexcept
         : saved_limit_(PageStateAllocationControl::successful_allocations_before_failure) {}
 
+    ScopedPageStateAllocationLimit(const ScopedPageStateAllocationLimit&) = delete;
+    ScopedPageStateAllocationLimit& operator=(const ScopedPageStateAllocationLimit&) = delete;
+
     ~ScopedPageStateAllocationLimit() {
         PageStateAllocationControl::successful_allocations_before_failure = saved_limit_;
     }
