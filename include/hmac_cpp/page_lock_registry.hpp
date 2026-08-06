@@ -5,17 +5,33 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <utility>
 
 namespace hmac_cpp {
 namespace detail {
 
+struct page_lock_page_state {
+    std::size_t owners{};
+    bool os_locked{};
+    bool pending_lock{};
+};
+
 /// \brief Process-wide ownership registry for page-granular memory locks.
 /// \tparam PageLocker Type exposing lock_page() and unlock_page().
 /// \tparam Mutex Mutex type used to synchronize access to the registry.
-template<class PageLocker, class Mutex = std::mutex>
+/// \tparam PageStateAllocator Allocator used by the registry's page-state map.
+template<class PageLocker,
+         class Mutex = std::mutex,
+         class PageStateAllocator = std::allocator<std::pair<const std::uintptr_t, page_lock_page_state>>>
 class page_lock_registry {
 public:
+    static_assert(noexcept(std::declval<PageLocker&>().lock_page(nullptr, std::size_t{})),
+                  "PageLocker::lock_page must be noexcept");
+    static_assert(noexcept(std::declval<PageLocker&>().unlock_page(nullptr, std::size_t{})),
+                  "PageLocker::unlock_page must be noexcept");
+
     explicit page_lock_registry(std::size_t page_size, PageLocker locker = PageLocker())
         : page_size_(page_size), locker_(locker) {}
 
@@ -71,13 +87,11 @@ public:
     }
 
 private:
-    struct page_state {
-        std::size_t owners{};
-        bool os_locked{};
-        bool pending_lock{};
-    };
-
-    using page_states_type = std::map<std::uintptr_t, page_state>;
+    using page_state = page_lock_page_state;
+    using page_states_type = std::map<std::uintptr_t,
+                                     page_state,
+                                     std::less<std::uintptr_t>,
+                                     PageStateAllocator>;
 
     bool normalize(void* ptr, std::size_t len, std::uintptr_t& first,
                    std::uintptr_t& last) const noexcept {
@@ -96,7 +110,7 @@ private:
     }
 
     template<class Visitor>
-    void for_each_page(std::uintptr_t first, std::uintptr_t last, Visitor visitor) noexcept {
+    void for_each_page(std::uintptr_t first, std::uintptr_t last, Visitor visitor) {
         for (std::uintptr_t page = first;; page += page_size_) {
             if (!visitor(page) || page == last) {
                 return;

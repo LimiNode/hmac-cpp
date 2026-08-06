@@ -219,6 +219,48 @@ struct ThrowingMutex {
     void unlock() noexcept {}
 };
 
+struct PageStateAllocationControl {
+    static int successful_allocations_before_failure;
+};
+
+int PageStateAllocationControl::successful_allocations_before_failure{-1};
+
+template<class T>
+struct ThrowingPageStateAllocator {
+    using value_type = T;
+
+    ThrowingPageStateAllocator() noexcept = default;
+
+    template<class U>
+    ThrowingPageStateAllocator(const ThrowingPageStateAllocator<U>&) noexcept {}
+
+    T* allocate(std::size_t count) {
+        if (PageStateAllocationControl::successful_allocations_before_failure == 0) {
+            throw std::bad_alloc();
+        }
+        if (PageStateAllocationControl::successful_allocations_before_failure > 0) {
+            --PageStateAllocationControl::successful_allocations_before_failure;
+        }
+        return std::allocator<T>{}.allocate(count);
+    }
+
+    void deallocate(T* ptr, std::size_t count) noexcept {
+        std::allocator<T>{}.deallocate(ptr, count);
+    }
+};
+
+template<class T, class U>
+bool operator==(const ThrowingPageStateAllocator<T>&,
+                const ThrowingPageStateAllocator<U>&) noexcept {
+    return true;
+}
+
+template<class T, class U>
+bool operator!=(const ThrowingPageStateAllocator<T>& lhs,
+                const ThrowingPageStateAllocator<U>& rhs) noexcept {
+    return !(lhs == rhs);
+}
+
 using UnlockedBuffer = hmac_cpp::secure_buffer<std::uint8_t, false, RecordingAllocator>;
 using LockedBuffer = hmac_cpp::secure_buffer<std::uint8_t,
                                               true,
@@ -555,6 +597,31 @@ TEST(PageLockRegistryTest, RollsBackPagesLockedBeforeAPartialFailure) {
     EXPECT_EQ(RegistryPageLocker::events[2].type, RegistryEventType::Unlock);
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[2].page), 0x1000u);
     EXPECT_FALSE(registry.unlock(range, 16));
+}
+
+TEST(PageLockRegistryTest, PageStateInsertionFailureReturnsFalseAndClearsPreparedEntries) {
+    using PageState = hmac_cpp::detail::page_lock_page_state;
+    using Allocator = ThrowingPageStateAllocator<std::pair<const std::uintptr_t, PageState>>;
+    using Registry = hmac_cpp::detail::page_lock_registry<RegistryPageLocker, std::mutex, Allocator>;
+
+    RegistryPageLocker::reset();
+    PageStateAllocationControl::successful_allocations_before_failure = 1;
+    Registry registry(4096);
+    void* const range = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1000));
+
+    EXPECT_FALSE(registry.lock(range, 8193));
+    EXPECT_EQ(RegistryPageLocker::event_count, 0u);
+
+    // If prepared entries remained, this range would reuse the first one and
+    // reach the OS locker despite allocations being disabled.
+    PageStateAllocationControl::successful_allocations_before_failure = 0;
+    EXPECT_FALSE(registry.lock(range, 8));
+    EXPECT_EQ(RegistryPageLocker::event_count, 0u);
+
+    PageStateAllocationControl::successful_allocations_before_failure = -1;
+    EXPECT_TRUE(registry.lock(range, 8));
+    EXPECT_TRUE(registry.unlock(range, 8));
+    EXPECT_EQ(RegistryPageLocker::event_count, 2u);
 }
 
 TEST(PageLockRegistryTest, UnlockFailureDoesNotCreateAPhantomOwner) {
