@@ -135,7 +135,8 @@ namespace hmac_cpp {
                               iterations, dk_len, prf);
         PageLockGuard lock(derived.data(), derived.size());
         secure_buffer<uint8_t, true> out(std::move(derived));
-        lock.locked = false;
+        // The buffer registers its own lock. Let the temporary guard release
+        // its reference after ownership of the allocation has moved.
         return out;
     }
 
