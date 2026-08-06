@@ -109,7 +109,7 @@ configure_package_config_file(
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/hmac_cppConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
+    COMPATIBILITY ExactVersion
 )
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/hmac_cppConfig.cmake"

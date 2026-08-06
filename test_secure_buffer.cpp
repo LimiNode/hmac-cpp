@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <system_error>
 
 #include "hmac_cpp/page_lock_registry.hpp"
 #include "hmac_cpp/secure_buffer.hpp"
@@ -190,22 +191,33 @@ struct RegistryPageLocker {
 
     bool unlock_page(void* page, std::size_t) const noexcept {
         events[event_count++] = {RegistryEventType::Unlock, page};
-        return true;
+        return reinterpret_cast<std::uintptr_t>(page) != failing_unlock_page;
     }
 
     static void reset() noexcept {
         event_count = 0;
         failing_page = 0;
+        failing_unlock_page = 0;
     }
 
     static std::array<RegistryEvent, 16> events;
     static std::size_t event_count;
     static std::uintptr_t failing_page;
+    static std::uintptr_t failing_unlock_page;
 };
 
 std::array<RegistryEvent, 16> RegistryPageLocker::events{};
 std::size_t RegistryPageLocker::event_count{};
 std::uintptr_t RegistryPageLocker::failing_page{};
+std::uintptr_t RegistryPageLocker::failing_unlock_page{};
+
+struct ThrowingMutex {
+    void lock() {
+        throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+    }
+
+    void unlock() noexcept {}
+};
 
 using UnlockedBuffer = hmac_cpp::secure_buffer<std::uint8_t, false, RecordingAllocator>;
 using LockedBuffer = hmac_cpp::secure_buffer<std::uint8_t,
@@ -543,6 +555,85 @@ TEST(PageLockRegistryTest, RollsBackPagesLockedBeforeAPartialFailure) {
     EXPECT_EQ(RegistryPageLocker::events[2].type, RegistryEventType::Unlock);
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(RegistryPageLocker::events[2].page), 0x1000u);
     EXPECT_FALSE(registry.unlock(range, 16));
+}
+
+TEST(PageLockRegistryTest, UnlockFailureDoesNotCreateAPhantomOwner) {
+    RegistryPageLocker::reset();
+    hmac_cpp::detail::page_lock_registry<RegistryPageLocker> registry(4096);
+    void* const page = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1001));
+
+    ASSERT_TRUE(registry.lock(page, 8));
+    RegistryPageLocker::failing_unlock_page = 0x1000;
+    EXPECT_FALSE(registry.unlock(page, 8));
+    EXPECT_FALSE(registry.unlock(page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 2u);
+
+    RegistryPageLocker::failing_unlock_page = 0;
+    ASSERT_TRUE(registry.lock(page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 2u);
+    EXPECT_TRUE(registry.unlock(page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+    EXPECT_EQ(RegistryPageLocker::events[2].type, RegistryEventType::Unlock);
+}
+
+TEST(PageLockRegistryTest, RetryAfterFailedMixedRangeUnlockPreservesOverlappingOwner) {
+    RegistryPageLocker::reset();
+    hmac_cpp::detail::page_lock_registry<RegistryPageLocker> registry(4096);
+    void* const mixed_range = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1000));
+    void* const overlapping_page = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1004));
+    void* const second_page = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x2000));
+
+    ASSERT_TRUE(registry.lock(mixed_range, 4097));
+    ASSERT_TRUE(registry.lock(overlapping_page, 8));
+    RegistryPageLocker::failing_unlock_page = 0x2000;
+    EXPECT_FALSE(registry.unlock(mixed_range, 4097));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+
+    RegistryPageLocker::failing_unlock_page = 0;
+    EXPECT_FALSE(registry.unlock(mixed_range, 4097));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+    EXPECT_TRUE(registry.unlock(overlapping_page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 4u);
+    EXPECT_EQ(RegistryPageLocker::events[3].type, RegistryEventType::Unlock);
+    EXPECT_EQ(RegistryPageLocker::events[3].page, mixed_range);
+
+    ASSERT_TRUE(registry.lock(second_page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 4u);
+    EXPECT_TRUE(registry.unlock(second_page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 5u);
+}
+
+TEST(PageLockRegistryTest, RollbackUnlockFailureCanBeReleasedByAFutureOwner) {
+    RegistryPageLocker::reset();
+    hmac_cpp::detail::page_lock_registry<RegistryPageLocker> registry(4096);
+    void* const mixed_range = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1000));
+    void* const first_page = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1008));
+
+    RegistryPageLocker::failing_page = 0x2000;
+    RegistryPageLocker::failing_unlock_page = 0x1000;
+    EXPECT_FALSE(registry.lock(mixed_range, 4097));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+
+    RegistryPageLocker::failing_page = 0;
+    RegistryPageLocker::failing_unlock_page = 0;
+    EXPECT_FALSE(registry.unlock(mixed_range, 4097));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+    ASSERT_TRUE(registry.lock(first_page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 3u);
+    EXPECT_TRUE(registry.unlock(first_page, 8));
+    ASSERT_EQ(RegistryPageLocker::event_count, 4u);
+    EXPECT_EQ(RegistryPageLocker::events[3].type, RegistryEventType::Unlock);
+    EXPECT_EQ(RegistryPageLocker::events[3].page, reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1000)));
+}
+
+TEST(PageLockRegistryTest, MutexFailureReturnsFalseInsteadOfTerminating) {
+    RegistryPageLocker::reset();
+    hmac_cpp::detail::page_lock_registry<RegistryPageLocker, ThrowingMutex> registry(4096);
+    void* const page = reinterpret_cast<void*>(static_cast<std::uintptr_t>(0x1001));
+
+    EXPECT_FALSE(registry.lock(page, 8));
+    EXPECT_FALSE(registry.unlock(page, 8));
+    EXPECT_EQ(RegistryPageLocker::event_count, 0u);
 }
 
 } // namespace

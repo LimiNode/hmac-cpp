@@ -12,7 +12,8 @@ namespace detail {
 
 /// \brief Process-wide ownership registry for page-granular memory locks.
 /// \tparam PageLocker Type exposing lock_page() and unlock_page().
-template<class PageLocker>
+/// \tparam Mutex Mutex type used to synchronize access to the registry.
+template<class PageLocker, class Mutex = std::mutex>
 class page_lock_registry {
 public:
     explicit page_lock_registry(std::size_t page_size, PageLocker locker = PageLocker())
@@ -25,8 +26,12 @@ public:
             return false;
         }
 
-        std::lock_guard<std::mutex> guard(mutex_);
-        return lock_range(first, last);
+        try {
+            std::lock_guard<Mutex> guard(mutex_);
+            return lock_range(first, last);
+        } catch (...) {
+            return false;
+        }
     }
 
     bool unlock(void* ptr, std::size_t len) noexcept {
@@ -36,34 +41,43 @@ public:
             return false;
         }
 
-        std::lock_guard<std::mutex> guard(mutex_);
-        if (!all_pages_registered(first, last)) {
+        try {
+            std::lock_guard<Mutex> guard(mutex_);
+            if (!all_pages_owned(first, last)) {
+                return false;
+            }
+
+            bool success = true;
+            for_each_page(first, last, [this, &success](std::uintptr_t page) {
+                typename page_states_type::iterator entry = page_states_.find(page);
+                page_state& state = entry->second;
+                if (state.owners > 1) {
+                    --state.owners;
+                    return true;
+                }
+
+                state.owners = 0;
+                if (!state.os_locked || locker_.unlock_page(reinterpret_cast<void*>(page), page_size_)) {
+                    page_states_.erase(entry);
+                } else {
+                    success = false;
+                }
+                return true;
+            });
+            return success;
+        } catch (...) {
             return false;
         }
-
-        bool success = true;
-        for_each_page(first, last, [this, &success](std::uintptr_t page) {
-            typename refcounts_type::iterator entry = refcounts_.find(page);
-            if (entry->second > 1) {
-                --entry->second;
-                return true;
-            }
-            if (!locker_.unlock_page(reinterpret_cast<void*>(page), page_size_)) {
-                success = false;
-                return true;
-            }
-            refcounts_.erase(entry);
-            return true;
-        });
-        return success;
     }
 
 private:
-    using refcounts_type = std::map<std::uintptr_t, std::size_t>;
+    struct page_state {
+        std::size_t owners{};
+        bool os_locked{};
+        bool pending_lock{};
+    };
 
-    static std::size_t pending_count() noexcept {
-        return std::numeric_limits<std::size_t>::max();
-    }
+    using page_states_type = std::map<std::uintptr_t, page_state>;
 
     bool normalize(void* ptr, std::size_t len, std::uintptr_t& first,
                    std::uintptr_t& last) const noexcept {
@@ -90,10 +104,10 @@ private:
         }
     }
 
-    bool all_pages_registered(std::uintptr_t first, std::uintptr_t last) const noexcept {
+    bool all_pages_owned(std::uintptr_t first, std::uintptr_t last) const noexcept {
         for (std::uintptr_t page = first;; page += page_size_) {
-            const typename refcounts_type::const_iterator entry = refcounts_.find(page);
-            if (entry == refcounts_.end() || entry->second == 0 || entry->second == pending_count()) {
+            const typename page_states_type::const_iterator entry = page_states_.find(page);
+            if (entry == page_states_.end() || entry->second.owners == 0 || entry->second.pending_lock) {
                 return false;
             }
             if (page == last) {
@@ -105,7 +119,7 @@ private:
     bool lock_range(std::uintptr_t first, std::uintptr_t last) noexcept {
         try {
             for_each_page(first, last, [this](std::uintptr_t page) {
-                refcounts_.emplace(page, 0);
+                page_states_.emplace(page, page_state{});
                 return true;
             });
         } catch (...) {
@@ -115,8 +129,8 @@ private:
 
         bool overflow = false;
         for_each_page(first, last, [this, &overflow](std::uintptr_t page) {
-            const typename refcounts_type::const_iterator entry = refcounts_.find(page);
-            if (entry->second >= pending_count() - 1) {
+            const typename page_states_type::const_iterator entry = page_states_.find(page);
+            if (entry->second.owners == std::numeric_limits<std::size_t>::max()) {
                 overflow = true;
                 return false;
             }
@@ -128,14 +142,16 @@ private:
         }
 
         for_each_page(first, last, [this](std::uintptr_t page) {
-            typename refcounts_type::iterator entry = refcounts_.find(page);
-            if (entry->second != 0) {
+            typename page_states_type::iterator entry = page_states_.find(page);
+            page_state& state = entry->second;
+            if (state.owners != 0 || state.os_locked) {
                 return true;
             }
             if (!locker_.lock_page(reinterpret_cast<void*>(page), page_size_)) {
                 return false;
             }
-            entry->second = pending_count();
+            state.os_locked = true;
+            state.pending_lock = true;
             return true;
         });
 
@@ -145,8 +161,9 @@ private:
         }
 
         for_each_page(first, last, [this](std::uintptr_t page) {
-            typename refcounts_type::iterator entry = refcounts_.find(page);
-            entry->second = entry->second == pending_count() ? 1 : entry->second + 1;
+            typename page_states_type::iterator entry = page_states_.find(page);
+            ++entry->second.owners;
+            entry->second.pending_lock = false;
             return true;
         });
         return true;
@@ -154,8 +171,8 @@ private:
 
     bool has_unlocked_page(std::uintptr_t first, std::uintptr_t last) const noexcept {
         for (std::uintptr_t page = first;; page += page_size_) {
-            const typename refcounts_type::const_iterator entry = refcounts_.find(page);
-            if (entry == refcounts_.end() || entry->second == 0) {
+            const typename page_states_type::const_iterator entry = page_states_.find(page);
+            if (entry == page_states_.end() || (!entry->second.os_locked && entry->second.owners == 0)) {
                 return true;
             }
             if (page == last) {
@@ -166,9 +183,9 @@ private:
 
     void erase_unlocked_pages(std::uintptr_t first, std::uintptr_t last) noexcept {
         for_each_page(first, last, [this](std::uintptr_t page) {
-            typename refcounts_type::iterator entry = refcounts_.find(page);
-            if (entry != refcounts_.end() && entry->second == 0) {
-                refcounts_.erase(entry);
+            typename page_states_type::iterator entry = page_states_.find(page);
+            if (entry != page_states_.end() && entry->second.owners == 0 && !entry->second.os_locked) {
+                page_states_.erase(entry);
             }
             return true;
         });
@@ -176,18 +193,19 @@ private:
 
     void rollback_pending_locks(std::uintptr_t first, std::uintptr_t last) noexcept {
         for_each_page(first, last, [this](std::uintptr_t page) {
-            typename refcounts_type::iterator entry = refcounts_.find(page);
-            if (entry == refcounts_.end()) {
+            typename page_states_type::iterator entry = page_states_.find(page);
+            if (entry == page_states_.end()) {
                 return true;
             }
-            if (entry->second == pending_count()) {
+            page_state& state = entry->second;
+            if (state.pending_lock) {
                 if (locker_.unlock_page(reinterpret_cast<void*>(page), page_size_)) {
-                    refcounts_.erase(entry);
+                    page_states_.erase(entry);
                 } else {
-                    entry->second = 1;
+                    state.pending_lock = false;
                 }
-            } else if (entry->second == 0) {
-                refcounts_.erase(entry);
+            } else if (state.owners == 0 && !state.os_locked) {
+                page_states_.erase(entry);
             }
             return true;
         });
@@ -195,8 +213,8 @@ private:
 
     std::size_t page_size_{};
     PageLocker locker_;
-    refcounts_type refcounts_;
-    std::mutex mutex_;
+    page_states_type page_states_;
+    Mutex mutex_;
 };
 
 } // namespace detail

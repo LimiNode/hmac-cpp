@@ -35,8 +35,9 @@ CI covers Linux/Windows/macOS. Tested with GCC, Clang, and MSVC; requires C++11.
 ## 📈 Versioning / SemVer policy
 
 * Follows [Semantic Versioning](https://semver.org).
-* MAJOR: breaking changes to headers or exported symbols.
-* MINOR: backward-compatible additions.
+* Before 1.0, a MINOR release may include breaking changes to headers or
+  exported symbols; CMake package discovery therefore requires an exact version.
+* After 1.0, MAJOR denotes breaking changes and MINOR denotes backward-compatible additions.
 * PATCH: bug fixes and internal changes.
 
 Version macros live in `<hmac_cpp/version.hpp>`:
@@ -61,6 +62,17 @@ builds and controls symbol export/import for shared builds.
 
 `HMACCPP_ENABLE_MLOCK` toggles best-effort page locking via `mlock`/`VirtualLock`.
 Disable it if the platform lacks the necessary privileges.
+
+### Page-locking limitations
+
+`secure_buffer<T, true>` attempts page locking only when `HMACCPP_ENABLE_MLOCK`
+is enabled; it is not page-locked by default. Lock ownership is coordinated only
+inside one loaded copy of hmac-cpp. Statically linking separate copies into
+multiple modules creates separate registries.
+
+On POSIX, continuing in a child process after `fork()` without `exec()` is not
+supported for page locking: the child must immediately `exec()` or avoid using
+the inherited secure buffers.
 
 ### Build
 

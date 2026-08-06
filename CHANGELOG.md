@@ -15,6 +15,14 @@
   use a 0.6.0 DLL/SO as a drop-in replacement for a 0.5.x build.
 - CI now runs the secure-buffer regression target with page locking both enabled
   and disabled.
+- CMake package compatibility is `ExactVersion` while the project remains
+  pre-1.0; a 0.x minor release may contain breaking changes.
+
+### Page-locking limitations
+- The page-lock registry coordinates calls only within one loaded copy of
+  hmac-cpp. Separate statically linked modules have independent registries.
+- Continuing after POSIX `fork()` without `exec()` is unsupported for page
+  locking because child processes do not inherit memory locks.
 
 ### Upgrade
 - Rebuild every consumer against the 0.6.0 headers and library together.
