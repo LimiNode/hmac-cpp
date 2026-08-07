@@ -20,7 +20,7 @@ jobs:
         std: [11, 17]
         mlock: [ON, OFF]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake
       - name: Configure
@@ -35,7 +35,7 @@ jobs:
       matrix:
         mlock: [ON, OFF]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git
