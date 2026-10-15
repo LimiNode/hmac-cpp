@@ -1,8 +1,8 @@
 # hmac-cpp [English README](./README.md)
 
-[![Linux](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Linux.yml/badge.svg?branch=main)](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Linux.yml)
-[![Windows](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Win.yml/badge.svg?branch=main)](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Win.yml)
-[![macOS](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-macOS.yml/badge.svg?branch=main)](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-macOS.yml)
+[![Linux](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Linux.yml/badge.svg?branch=main)](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Linux.yml)
+[![Windows](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Win.yml/badge.svg?branch=main)](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Win.yml)
+[![macOS](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-macOS.yml/badge.svg?branch=main)](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-macOS.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Лёгкая библиотека **C++11** для вычисления **HMAC** (SHA-1/SHA-256/SHA-512), вывода ключей (**PBKDF2**, **HKDF**) и одноразовых паролей (**HOTP**, **TOTP**). Включает упрощённые **временные HMAC-токены** для статeless-сценариев и совместима с **MQL5**.
@@ -387,9 +387,9 @@ cl /EHsc example.cpp /I _install\\include /link /LIBPATH:_install\\lib hmac_cpp.
 ## 🔗 Связанные проекты
 
 * [ADVobfuscator](https://github.com/andrivet/ADVobfuscator)
-* [obfy](https://github.com/NewYaroslav/obfy)
-* [aes-cpp](https://github.com/NewYaroslav/aes-cpp)
-* [siphash-cpp](https://github.com/NewYaroslav/siphash-cpp)
+* [obfy](https://github.com/LimiNode/obfy)
+* [aes-cpp](https://github.com/LimiNode/aes-cpp)
+* [siphash-cpp](https://github.com/LimiNode/siphash-cpp)
 
 ---
 
