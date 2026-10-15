@@ -1,8 +1,8 @@
 # hmac-cpp [🇷🇺 README-RU](./README-RU.md)
 
-[![Linux](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Linux.yml/badge.svg?branch=main)](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Linux.yml)
-[![Windows](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Win.yml/badge.svg?branch=main)](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-Win.yml)
-[![macOS](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-macOS.yml/badge.svg?branch=main)](https://github.com/NewYaroslav/hmac-cpp/actions/workflows/CI-macOS.yml)
+[![Linux](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Linux.yml/badge.svg?branch=main)](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Linux.yml)
+[![Windows](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Win.yml/badge.svg?branch=main)](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-Win.yml)
+[![macOS](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-macOS.yml/badge.svg?branch=main)](https://github.com/LimiNode/hmac-cpp/actions/workflows/CI-macOS.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A lightweight **C++11** library for computing **HMAC** (SHA-1/SHA-256/SHA-512), key derivation (**PBKDF2**, **HKDF**), and OTP (**HOTP**, **TOTP**). Includes optional **time-based HMAC tokens** for simple stateless use-cases and **MQL5** compatibility.
@@ -352,7 +352,7 @@ Covered vectors:
 | HOTP   | RFC 4226 (App D) |
 | TOTP   | RFC 6238 (App B) |
 
-CI: [GitHub Actions](https://github.com/NewYaroslav/hmac-cpp/actions).
+CI: [GitHub Actions](https://github.com/LimiNode/hmac-cpp/actions).
 
 ---
 
@@ -424,9 +424,9 @@ neighboring memory attacks.
 ## 🔗 Related Projects
 
 * [ADVobfuscator](https://github.com/andrivet/ADVobfuscator)
-* [obfy](https://github.com/NewYaroslav/obfy)
-* [aes-cpp](https://github.com/NewYaroslav/aes-cpp)
-* [siphash-cpp](https://github.com/NewYaroslav/siphash-cpp)
+* [obfy](https://github.com/LimiNode/obfy)
+* [aes-cpp](https://github.com/LimiNode/aes-cpp)
+* [siphash-cpp](https://github.com/LimiNode/siphash-cpp)
 
 ---
 
